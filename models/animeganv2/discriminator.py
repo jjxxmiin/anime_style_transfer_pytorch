@@ -50,7 +50,7 @@ class Discriminator(nn.Module):
 
         self.layer = nn.Sequential(*self.layer)
 
-    def forward(self, input):
+    def forward(self, input, gray=False):
         output = self.layer(input)
 
         return output

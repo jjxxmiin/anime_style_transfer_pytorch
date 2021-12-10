@@ -1,7 +1,7 @@
 
 epoch = 101
 init_epoch = 10
-batch_size = 12
+batch_size = 4
 save_freq = 1
 
 init_lr = 2e-4
@@ -25,3 +25,4 @@ img_ch = 3
 
 n_dis = 3
 
+checkpoint_path = './checkpoint'
