@@ -12,7 +12,7 @@ class AnimeDataset(Dataset):
 
         self.image_size = (256, 256)
 
-        image_folder = os.path.join(root_path, dataset, 'real')
+        image_folder = os.path.join(root_path, 'pixiv', 'real')
         smooth_folder = os.path.join(root_path, dataset, 'smooth')
         style_folder = os.path.join(root_path, dataset, 'style')
 
@@ -23,11 +23,10 @@ class AnimeDataset(Dataset):
         self.transforms = transforms.Compose([
             transforms.Resize(self.image_size),
             transforms.ToTensor(),
-            transforms.Normalize(0.5, 0.5),
         ])
 
     def __len__(self):
-        return len(self.style_path_list)
+        return len(self.image_path_list)
 
     def __getitem__(self, idx):
         image_path = random.choice(self.image_path_list)
@@ -35,35 +34,20 @@ class AnimeDataset(Dataset):
         smooth_path = self.smooth_path_list[idx] # random.choice(self.smooth_path_list)
 
         image = Image.open(image_path).convert('RGB')
-        style = Image.open(style_path).convert('RGB')
-        gray = style.convert('L').convert('RGB')
-        smooth = Image.open(smooth_path).convert('RGB')
+        anime = Image.open(style_path).convert('RGB')
+        anime_gray = Image.open(style_path).convert('L').convert('RGB')
+        anime_smooth = Image.open(smooth_path).convert('L').convert('RGB')
 
         image = self.transforms(image)
-        gray = self.transforms(gray)
-        style = self.transforms(style)
-        smooth = self.transforms(smooth)
+        anime = self.transforms(anime)
+        anime_gray = self.transforms(anime_gray)
+        anime_smooth = self.transforms(anime_smooth)
 
         inputs = {
             'image': image,
-            'gray': gray,
-            'style': style,
-            'smooth': smooth,
+            'anime': anime,
+            'anime_gray': anime_gray,
+            'anime_smooth': anime_smooth,
         }
 
         return inputs
-
-
-if __name__ == "__main__":
-    import torch
-
-    anime_dataset = AnimeDataset(root_path='./data')
-
-    inputs = anime_dataset[4356]
-
-    image = inputs['image'].unsqueeze(0)
-    gray = inputs['gray'].unsqueeze(0)
-    style = inputs['style'].unsqueeze(0)
-    smooth = inputs['smooth'].unsqueeze(0)
-
-    torchvision.utils.save_image(torch.cat([image, gray, style, smooth]), './data.png')

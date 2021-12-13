@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-dataset = 'pixiv2'
+dataset = 'acane'
 
 dataset_folder = f'./data/{dataset}/style'
 save_folder = f'./data/{dataset}/smooth/'

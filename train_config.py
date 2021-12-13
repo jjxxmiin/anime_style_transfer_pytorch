@@ -9,12 +9,12 @@ g_lr = 2e-5
 d_lr = 4e-5
 ld = 10.0
 
-g_adv_weight = 10.0
-d_adv_weight = 10.0
+g_adv_weight = 300.0
+d_adv_weight = 300.0
 
 con_weight = 1.5
-color_weight = 50.0
-sty_weight = 100 # 10.0 # 2.5
+color_weight = 10.0 
+sty_weight = 2.5
 tv_weight = 1.
 
 training_rate = 1

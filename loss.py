@@ -48,6 +48,7 @@ class AnimeLoss(object):
         self.opt = opt
         self.vgg = Vgg19().cuda().eval()
         self.l1 = nn.L1Loss().cuda()
+        self.l2 = nn.MSELoss().cuda()
         self.huber = nn.SmoothL1Loss().cuda()
 
         self._rgb_to_yuv_kernel = torch.tensor([
@@ -93,7 +94,7 @@ class AnimeLoss(object):
             phi_y = phi_y.reshape(C, H * W)
             G_x = torch.matmul(phi_x, phi_x.t()) / (C * H * W)
             G_y = torch.matmul(phi_y, phi_y.t()) / (C * H * W)
-            loss += torch.sqrt(torch.mean((G_x - G_y) ** 2))
+            loss += self.l2(G_x, G_y)
 
         return loss
 
@@ -113,7 +114,7 @@ class AnimeLoss(object):
             return torch.mean(torch.square(pred - 1.0))
         
         elif adv_type == 'dragan':
-            return torch.mean(nn.BCEWithLogitsLoss()(torch.ones_like(pred), pred))
+            return torch.mean(nn.BCEWithLogitsLoss()(pred, torch.ones_like(pred)))
 
         raise ValueError(f'Do not support loss type {adv_type}')
 
@@ -122,7 +123,7 @@ class AnimeLoss(object):
             return torch.mean(torch.square(pred))
 
         elif adv_type == 'dragan':
-            return torch.mean(nn.BCEWithLogitsLoss()(torch.zeros_like(pred), pred))
+            return torch.mean(nn.BCEWithLogitsLoss()(pred, torch.zeros_like(pred)))
 
         raise ValueError(f'Do not support loss type {adv_type}')
 
@@ -131,7 +132,7 @@ class AnimeLoss(object):
             return torch.mean(torch.square(pred - 1.0))
 
         elif adv_type == 'dragan':
-            return torch.mean(nn.BCEWithLogitsLoss()(torch.ones_like(pred), pred))
+            return torch.mean(nn.BCEWithLogitsLoss()(pred, torch.ones_like(pred)))
 
         raise ValueError(f'Do not support loss type {adv_type}')
 
@@ -139,11 +140,11 @@ class AnimeLoss(object):
         loss = self._vgg_loss(real, generated) * self.opt.con_weight
         return loss
 
-    def loss_G(self, generated, real, generated_D, gray):
+    def loss_G(self, generated_D, real, generated, gray):
         loss_GAN = self.adv_loss_g(generated_D) * self.opt.g_adv_weight
         loss_VGG = self._vgg_loss(real, generated) * self.opt.con_weight
-        loss_Color = self._color_loss(real, generated) * self.opt.color_weight
         loss_Style = self._style_loss(gray, generated) * self.opt.sty_weight
+        loss_Color = self._color_loss(real, generated) * self.opt.color_weight
         loss_TV = self._tv_loss(generated) * self.opt.tv_weight
 
         loss = loss_GAN + loss_VGG + loss_Style + loss_TV + loss_Color
@@ -152,13 +153,13 @@ class AnimeLoss(object):
 
         return loss
         
-    def loss_D(self, generated_D, anime_D, anime_gray_D, anime_smooth_D):
+    def loss_D(self, anime_D, generated_D, anime_gray_D, anime_smooth_D):
         style_loss_D = self.adv_loss_d_real(anime_D)
-        gray_loss_D = self.adv_loss_d_fake(anime_gray_D)
         fake_loss_D = self.adv_loss_d_fake(generated_D)
+        gray_loss_D = self.adv_loss_d_fake(anime_gray_D)
         blur_loss_D = self.adv_loss_d_fake(anime_smooth_D)
 
-        loss = (style_loss_D * 1.2 + fake_loss_D * 1.2 + gray_loss_D * 1.5 + blur_loss_D * 0.8) * self.opt.d_adv_weight
+        loss = (style_loss_D * 1.7 + fake_loss_D * 1.7 + gray_loss_D * 1.7 + blur_loss_D * 1.0) * self.opt.d_adv_weight
 
         print("\nD ", style_loss_D.item(), gray_loss_D.item(), fake_loss_D.item(), blur_loss_D.item())
 
