@@ -3,8 +3,10 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-dataset_folder = './data/style'
-save_folder = './data/smooth/'
+dataset = 'pixiv2'
+
+dataset_folder = f'./data/{dataset}/style'
+save_folder = f'./data/{dataset}/smooth/'
 
 if not os.path.exists(save_folder):
     os.mkdir(save_folder)

@@ -1,228 +1,103 @@
-import os
 import torch
-import torchvision
 import torch.nn as nn
-import torch.nn.functional as F
-from torchvision import models
+from models.vgg19 import Vgg19
 from torch.autograd import Variable
-from skimage.color import rgb2yuv
+from torch.autograd import grad as torch_grad
 
 
-class Vgg19(nn.Module):
-    def __init__(self, requires_grad=False):
-        super(Vgg19, self).__init__()
-        vgg_pretrained_features = models.vgg19(pretrained=True).features
-        self.slice1 = torch.nn.Sequential()
-        self.slice2 = torch.nn.Sequential()
-        self.slice3 = torch.nn.Sequential()
-        self.slice4 = torch.nn.Sequential()
-        self.slice5 = torch.nn.Sequential()
-        for x in range(2):
-            self.slice1.add_module(str(x), vgg_pretrained_features[x])
-        for x in range(2, 7):
-            self.slice2.add_module(str(x), vgg_pretrained_features[x])
-        for x in range(7, 12):
-            self.slice3.add_module(str(x), vgg_pretrained_features[x])
-        for x in range(12, 21):
-            self.slice4.add_module(str(x), vgg_pretrained_features[x])
-        for x in range(21, 30):
-            self.slice5.add_module(str(x), vgg_pretrained_features[x])
-        if not requires_grad:
-            for param in self.parameters():
-                param.requires_grad = False
+def gradient_penalty(real, fake, D):
+    eps = torch.rand(real.shape).cuda()
+    x_std = torch.std(real, dim=[0, 1, 2, 3])
 
-    def forward(self, X):
-        h_relu1 = self.slice1(X)
-        h_relu2 = self.slice2(h_relu1)
-        h_relu3 = self.slice3(h_relu2)
-        h_relu4 = self.slice4(h_relu3)
-        h_relu5 = self.slice5(h_relu4)
-        out = [h_relu1, h_relu2, h_relu3, h_relu4, h_relu5]
-        return out
+    fake = real + 0.5 * x_std * eps
+
+    batch_size = real.size()[0]
+
+    # Calculate interpolation
+    alpha = torch.rand(batch_size, 1, 1, 1)
+    alpha = alpha.expand_as(real)
+    alpha = alpha.cuda()
+    interpolated = alpha * real.data + (1 - alpha) * fake.data
+    interpolated = Variable(interpolated, requires_grad=True)
+    interpolated = interpolated.cuda()
+
+    # Calculate probability of interpolated examples
+    prob_interpolated = D(interpolated)
+
+    # Calculate gradients of probabilities with respect to examples
+    gradients = torch_grad(outputs=prob_interpolated, inputs=interpolated,
+                            grad_outputs=torch.ones(prob_interpolated.size()).cuda(),
+                            create_graph=True, retain_graph=True)[0]
+
+    # Gradients have shape (batch_size, num_channels, img_width, img_height),
+    # so flatten to easily take norm per example in batch
+    gradients = gradients.view(batch_size, -1)
+
+    # Derivatives of the gradient close to 0 can cause problems because of
+    # the square root, so manually calculate norm and add epsilon
+    gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12)
+
+    # Return gradient penalty
+    return 10 * ((gradients_norm - 1) ** 2).mean()
 
 
-class VGGLoss(nn.Module):
-    def __init__(self, layids=None):
-        super(VGGLoss, self).__init__()
-        self.vgg = Vgg19().cuda()
+class AnimeLoss(object):
+    def __init__(self, opt):
+        super().__init__()
 
-        self.criterion = nn.L1Loss().cuda()
-        self.weights = [1.0/32, 1.0/16, 1.0/8, 1.0/4, 1.0]
-        self.layids = layids
+        self.opt = opt
+        self.vgg = Vgg19().cuda().eval()
+        self.l1 = nn.L1Loss().cuda()
+        self.huber = nn.SmoothL1Loss().cuda()
 
-    def forward(self, x, y):
-        x_vgg, y_vgg = self.vgg(x), self.vgg(y)
-        loss = 0
-        if self.layids is None:
-            self.layids = list(range(len(x_vgg)))
-        for i in self.layids:
-            loss += self.weights[i] * \
-                self.criterion(x_vgg[i], y_vgg[i].detach())
+        self._rgb_to_yuv_kernel = torch.tensor([
+            [0.299, -0.14714119, 0.61497538],
+            [0.587, -0.28886916, -0.51496512],
+            [0.114, 0.43601035, -0.10001026]
+        ]).float().cuda()
+
+    def rgb_to_yuv(self, image):
+        image = (image + 1.0) / 2.0
+
+        yuv_img = torch.tensordot(
+            image,
+            self._rgb_to_yuv_kernel,
+            dims=([image.ndim - 3], [0]))
+
+        return yuv_img
+
+    def _vgg_loss(self, real, fake):
+        x_vgg, y_vgg = self.vgg(real), self.vgg(fake)
+        loss = self.l1(x_vgg, y_vgg)
+
         return loss
 
-
-class VGGPerceptualLoss(nn.Module):
-    def __init__(self, resize=True):
-        super(VGGPerceptualLoss, self).__init__()
-        blocks = []
-        blocks.append(torchvision.models.vgg16(pretrained=True).features[:4].eval())
-        blocks.append(torchvision.models.vgg16(pretrained=True).features[4:9].eval())
-        blocks.append(torchvision.models.vgg16(pretrained=True).features[9:16].eval())
-        blocks.append(torchvision.models.vgg16(pretrained=True).features[16:23].eval())
-        for bl in blocks:
-            for p in bl.parameters():
-                p.requires_grad = False
-        self.blocks = torch.nn.ModuleList(blocks)
-        self.transform = torch.nn.functional.interpolate
-        self.resize = resize
-        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
-        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
-
-    def forward(self, input, target, feature_layers=[0, 1, 2, 3], style_layers=[]):
-        if input.shape[1] != 3:
-            input = input.repeat(1, 3, 1, 1)
-            target = target.repeat(1, 3, 1, 1)
-        input = (input-self.mean) / self.std
-        target = (target-self.mean) / self.std
-        if self.resize:
-            input = self.transform(input, mode='bilinear', size=(224, 224), align_corners=False)
-            target = self.transform(target, mode='bilinear', size=(224, 224), align_corners=False)
-        loss = 0.0
-        x = input
-        y = target
-        for i, block in enumerate(self.blocks):
-            x = block(x)
-            y = block(y)
-            if i in feature_layers:
-                loss += torch.nn.functional.l1_loss(x, y)
-            if i in style_layers:
-                act_x = x.reshape(x.shape[0], x.shape[1], -1)
-                act_y = y.reshape(y.shape[0], y.shape[1], -1)
-                gram_x = act_x @ act_x.permute(0, 2, 1)
-                gram_y = act_y @ act_y.permute(0, 2, 1)
-                loss += torch.nn.functional.l1_loss(gram_x, gram_y)
-        return loss
-
-
-class StyleLoss(nn.Module):
-    def __init__(self):
-        super(StyleLoss, self).__init__()
-        self.vgg = Vgg19().cuda()
-        self.weights = [1.0 / 32, 1.0 / 16, 1.0 / 8, 1.0 / 4, 1.0]
-
-    def forward(self, x, y):
-        x_vgg, y_vgg = self.vgg(x), self.vgg(y)
-        loss = 0
-        for i in range(len(x_vgg)):
-            N, C, H, W = x_vgg[i].shape
-            for n in range(N):
-                phi_x = x_vgg[i][n]
-                phi_y = y_vgg[i][n]
-                phi_x = phi_x.reshape(C, H * W)
-                phi_y = phi_y.reshape(C, H * W)
-                G_x = torch.matmul(phi_x, phi_x.t()) / (C * H * W)
-                G_y = torch.matmul(phi_y, phi_y.t()) / (C * H * W)
-                loss += torch.sqrt(torch.mean((G_x - G_y) ** 2)
-                                   ) * self.weights[i]
-        return loss
-
-
-class GANLoss(nn.Module):
-    def __init__(self, use_lsgan=True, target_real_label=1.0, target_fake_label=0.0,
-                 tensor=torch.cuda.FloatTensor):
-        super(GANLoss, self).__init__()
-        self.real_label = target_real_label
-        self.fake_label = target_fake_label
-        self.real_label_var = None
-        self.fake_label_var = None
-        self.Tensor = tensor
-        if use_lsgan:
-            self.loss = nn.MSELoss()
-        else:
-            self.loss = nn.BCELoss()
-
-    def get_target_tensor(self, input, target_is_real):
-        target_tensor = None
-        if target_is_real:
-            create_label = ((self.real_label_var is None) or
-                            (self.real_label_var.numel() != input.numel()))
-            if create_label:
-                real_tensor = self.Tensor(input.size()).fill_(self.real_label)
-                self.real_label_var = Variable(
-                    real_tensor, requires_grad=False)
-            target_tensor = self.real_label_var
-        else:
-            create_label = ((self.fake_label_var is None) or
-                            (self.fake_label_var.numel() != input.numel()))
-            if create_label:
-                fake_tensor = self.Tensor(input.size()).fill_(self.fake_label)
-                self.fake_label_var = Variable(
-                    fake_tensor, requires_grad=False)
-            target_tensor = self.fake_label_var
-        return target_tensor
-
-    def __call__(self, input, target_is_real):
-        if isinstance(input[0], list):
-            loss = 0
-            for input_i in input:
-                pred = input_i[-1]
-                target_tensor = self.get_target_tensor(pred, target_is_real)
-                loss += self.loss(pred, target_tensor)
-            return loss
-        else:
-            target_tensor = self.get_target_tensor(input[-1], target_is_real)
-            return self.loss(input[-1], target_tensor)
-
-
-class Color_Loss(nn.Module):
-    def __init__(self):
-        super(Color_Loss, self).__init__()
-
-        self.l1_loss = nn.L1Loss()
-        self.huber_loss = nn.SmoothL1Loss()
-
-    def _convert(self, input_, type_):
-        return {
-            'float': input_.float(),
-            'double': input_.double(),
-        }.get(type_, input_)
-
-    def rgb_to_yuv(self, input_):
-        to_squeeze = (input_.dim() == 3)
-        device = input_.device
-        input_ = input_.cpu()
-        input_ = self._convert(input_, type_='')
-
-        if to_squeeze:
-            input_ = input_.unsqueeze(0)
-
-        input_ = input_.permute(0, 2, 3, 1).detach().numpy()
-        transformed = rgb2yuv(input_)
-        output = torch.from_numpy(transformed).float().permute(0, 3, 1, 2)
-        
-        if to_squeeze:
-            output = output.squeeze(0)
-        
-        output = self._convert(output, type_='')
-
-        return output.to(device)
-
-    def __call__(self, real, fake):
+    def _color_loss(self, real, fake):
         real = self.rgb_to_yuv(real)
         fake = self.rgb_to_yuv(fake)
 
-        y = self.l1_loss(real[:, 0, :, :], fake[:, 0, :, :])
-        u = self.huber_loss(real[:, 1, :, :], fake[:, 1, :, :])
-        v = self.huber_loss(real[:, 2, :, :], fake[:, 2, :, :])
+        # After convert to yuv, both images have channel last
 
-        return y + u + v
+        return (self.l1(real[:, :, :, 0], fake[:, :, :, 0]) +
+                self.huber(real[:, :, :, 1], fake[:, :, :, 1]) +
+                self.huber(real[:, :, :, 2], fake[:, :, :, 2]))
 
+    def _style_loss(self, x, y):
+        x_vgg, y_vgg = self.vgg(x), self.vgg(y)
+        loss = 0
+        N, C, H, W = x_vgg.shape
+        for n in range(N):
+            phi_x = x_vgg[n]
+            phi_y = y_vgg[n]
+            phi_x = phi_x.reshape(C, H * W)
+            phi_y = phi_y.reshape(C, H * W)
+            G_x = torch.matmul(phi_x, phi_x.t()) / (C * H * W)
+            G_y = torch.matmul(phi_y, phi_y.t()) / (C * H * W)
+            loss += torch.sqrt(torch.mean((G_x - G_y) ** 2))
 
-class Variation_Loss(nn.Module):
-    def __init__(self):
-        super().__init__()
+        return loss
 
-    def __call__(self, inputs):
+    def _tv_loss(self, inputs):
         dh = inputs[:, :, :-1, :] - inputs[:, :, 1:, :]
         dw = inputs[:, :, :, :-1] - inputs[:, :, :, 1:]
         size_dh = dh.size().numel()
@@ -233,11 +108,58 @@ class Variation_Loss(nn.Module):
 
         return  loss_h + loss_w
 
+    def adv_loss_d_real(self, pred, adv_type='dragan'):
+        if adv_type == 'lsgan':
+            return torch.mean(torch.square(pred - 1.0))
+        
+        elif adv_type == 'dragan':
+            return torch.mean(nn.BCEWithLogitsLoss()(torch.ones_like(pred), pred))
 
-if __name__ == "__main__":
-    a = torch.rand(1, 3, 256, 256)
-    b = torch.rand(1, 3, 256, 256)
-    
-    print(Color_Loss()(a, b))
-    print(Variation_Loss()(a))
+        raise ValueError(f'Do not support loss type {adv_type}')
 
+    def adv_loss_d_fake(self, pred, adv_type='dragan'):
+        if adv_type == 'lsgan':
+            return torch.mean(torch.square(pred))
+
+        elif adv_type == 'dragan':
+            return torch.mean(nn.BCEWithLogitsLoss()(torch.zeros_like(pred), pred))
+
+        raise ValueError(f'Do not support loss type {adv_type}')
+
+    def adv_loss_g(self, pred, adv_type='dragan'):
+        if adv_type == 'lsgan':
+            return torch.mean(torch.square(pred - 1.0))
+
+        elif adv_type == 'dragan':
+            return torch.mean(nn.BCEWithLogitsLoss()(torch.ones_like(pred), pred))
+
+        raise ValueError(f'Do not support loss type {adv_type}')
+
+    def loss_init(self, real, generated):
+        loss = self._vgg_loss(real, generated) * self.opt.con_weight
+        return loss
+
+    def loss_G(self, generated, real, generated_D, gray):
+        loss_GAN = self.adv_loss_g(generated_D) * self.opt.g_adv_weight
+        loss_VGG = self._vgg_loss(real, generated) * self.opt.con_weight
+        loss_Color = self._color_loss(real, generated) * self.opt.color_weight
+        loss_Style = self._style_loss(gray, generated) * self.opt.sty_weight
+        loss_TV = self._tv_loss(generated) * self.opt.tv_weight
+
+        loss = loss_GAN + loss_VGG + loss_Style + loss_TV + loss_Color
+
+        print("G ", loss_GAN.item(), loss_VGG.item(), loss_Style.item(), loss_TV.item(), loss_Color.item())
+
+        return loss
+        
+    def loss_D(self, generated_D, anime_D, anime_gray_D, anime_smooth_D):
+        style_loss_D = self.adv_loss_d_real(anime_D)
+        gray_loss_D = self.adv_loss_d_fake(anime_gray_D)
+        fake_loss_D = self.adv_loss_d_fake(generated_D)
+        blur_loss_D = self.adv_loss_d_fake(anime_smooth_D)
+
+        loss = (style_loss_D * 1.2 + fake_loss_D * 1.2 + gray_loss_D * 1.5 + blur_loss_D * 0.8) * self.opt.d_adv_weight
+
+        print("\nD ", style_loss_D.item(), gray_loss_D.item(), fake_loss_D.item(), blur_loss_D.item())
+
+        return loss
