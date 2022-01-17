@@ -2,8 +2,44 @@
 
 Anime Style Transfer with Pytorch
 
+- YOLOv5
+- Waifu2x
+- CLIP
 - StyleGAN2(Blending)
 - pix2pixHD
+
+### My Env
+
+- python 3.7
+- pytorch 1.8.1
+- cuda 11.1
+- cudnn 8.0.5
+
+---
+
+```
+collect video and image
+->
+face detection
+->
+image filtering using clip (clear / blurred)
+->
+waifu upsampling
+->
+face alignment according to ffhq standard
+->
+train Anime StyleGAN (transfer learning!!)
+->
+FFHQ, Anime StyleGAN Blending
+->
+Make Dataset
+->
+Pix2PixHD Training
+->
+Result !!
+```
+
+---
 
 ### 1. Prepare custom data
 
@@ -11,6 +47,15 @@ Anime Style Transfer with Pytorch
 # video
 
 ffmpeg -i video.mp4 -filter:v fps=0.5 video%d.jpg
+```
+
+```
+# folder
+anime
+  |- 1.png
+  |- 2.png
+  |- 3.png
+  |- ...
 ```
 
 ### 2. Face Detection with YOLOv5
@@ -83,7 +128,7 @@ for name in tqdm(os.listdir(folder)):
 - [StyleGAN2](https://github.com/NVlabs/stylegan2-ada-pytorch)
 
 ```
-python dataset_tool.py --source=[YOUR DATASET PATH] --dest=./anime.zip
+python dataset_tool.py --source=[YOUR DATASET PATH] --dest=./anime.zip --width 512 --height 512
 ```
 
 ```sh
@@ -95,6 +140,7 @@ python train.py --outdir=./training-runs --data=./anime.zip --cfg=paper512 --mir
 - [StyleGAN2](https://github.com/NVlabs/stylegan2-ada-pytorch)
 
 - Reference : `./blending.ipynb`
+- Number of Images : 10000
 
 ### 8. Pix2Pix Training
 
