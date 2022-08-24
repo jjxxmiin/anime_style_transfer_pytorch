@@ -1,5 +1,9 @@
 # Anime Style Transfer
 
+![result](./asset/result2.PNG)
+
+Thank you [@AK](https://twitter.com/_akhaliq/status/1518828909994856448/photo/1)
+
 Anime Style Transfer with Pytorch
 
 - YOLOv5
@@ -160,14 +164,6 @@ python train.py --name anime --dataroot ./datasets/anime --loadSize 512 --label_
 
 python test.py --name anime --dataroot ./datasets/test --loadSize 512 --label_nc 0 --no_instance
 ```
-
-### Result
-
-
-
-![result](./asset/result.PNG)
-
-
 
 ## Reference
 
